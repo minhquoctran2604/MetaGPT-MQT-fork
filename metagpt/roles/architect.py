@@ -27,7 +27,9 @@ class Architect(RoleZero):
 
     name: str = "Bob"
     profile: str = "Architect"
-    goal: str = "design a concise, usable, complete software system. output the system design."
+    goal: str = (
+        "design a concise, usable, complete software system. output the system design."
+    )
     constraints: str = (
         "make sure the architecture is simple enough and use  appropriate open source "
         "libraries. Use same language as user requirement"
@@ -55,4 +57,6 @@ class Architect(RoleZero):
         return ARCHITECT_EXAMPLE
 
     def _update_tool_execution(self):
-        self.tool_execution_map.update({"Terminal.run_command": self.terminal.run_command})
+        self.tool_execution_map.update(
+            {"Terminal.run_command": self.terminal.run_command}
+        )
