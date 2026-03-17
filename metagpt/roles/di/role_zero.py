@@ -73,6 +73,7 @@ class RoleZero(Role):
     # React Mode
     react_mode: Literal["react"] = "react"
     max_react_loop: int = 50  # used for react mode
+    _should_stop: bool = False  # flag to break react loop after end command
 
     # Tools
     tools: list[str] = (
@@ -342,10 +343,12 @@ class RoleZero(Role):
             return quick_rsp
 
         actions_taken = 0
-        rsp = AIMessage(
-            content="No actions taken yet", cause_by=Action
-        )  # will be overwritten after Role _act
+        self._should_stop = False  # reset stop flag for new react cycle
+        rsp = AIMessage(content="No actions taken yet", cause_by=Action)  # will be overwritten after Role _act
         while actions_taken < self.rc.max_react_loop:
+            # Check if should stop after end command
+            if self._should_stop:
+                break
             # NOTE: Diff 2: Keep observing within _react, news will go into memory, allowing adapting to new info
             await self._observe()
 
@@ -474,6 +477,7 @@ class RoleZero(Role):
 
         elif cmd["command_name"] == "end":
             command_output = await self._end()
+            self._should_stop = True
         elif cmd["command_name"] == "RoleZero.ask_human":
             human_response = await self.ask_human(**cmd["args"])
             if human_response.strip().lower().endswith(("stop", "<stop>")):
@@ -483,6 +487,7 @@ class RoleZero(Role):
                 )
                 end_output = "\nCommand end executed:"
                 end_output += await self._end()
+                self._should_stop = True
                 return end_output
             return human_response
         # output from bash.run may be empty, add decorations to the output to ensure visibility.
