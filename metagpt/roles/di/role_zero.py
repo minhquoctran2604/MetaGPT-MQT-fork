@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import re
@@ -11,6 +12,7 @@ from pydantic import Field, model_validator
 
 from metagpt.actions import Action, UserRequirement
 from metagpt.actions.di.run_command import RunCommand
+from metagpt.const import MESSAGE_ROUTE_TO_ALL
 from metagpt.actions.search_enhanced_qa import SearchEnhancedQA
 from metagpt.exp_pool import exp_cache
 from metagpt.exp_pool.context_builders import RoleZeroContextBuilder
@@ -344,7 +346,9 @@ class RoleZero(Role):
 
         actions_taken = 0
         self._should_stop = False  # reset stop flag for new react cycle
-        rsp = AIMessage(content="No actions taken yet", cause_by=Action)  # will be overwritten after Role _act
+        rsp = AIMessage(
+            content="No actions taken yet", cause_by=Action
+        )  # will be overwritten after Role _act
         while actions_taken < self.rc.max_react_loop:
             # Check if should stop after end command
             if self._should_stop:
@@ -396,9 +400,8 @@ class RoleZero(Role):
                 context, system_msgs=[self.format_quick_system_prompt()]
             )
 
-        if (
-            "QUICK" in intent_result or "AMBIGUOUS" in intent_result
-        ):  # llm call with the original context
+        if "QUICK" in intent_result:
+            # Quick answer: reply directly and return
             async with ThoughtReporter(enable_llm_stream=True) as reporter:
                 await reporter.async_report({"type": "quick"})
                 answer = await self.llm.aask(
@@ -413,9 +416,38 @@ class RoleZero(Role):
             pattern = r"\[Message\] from .+? to .+?:\s*"
             answer = re.sub(pattern, "", answer, count=1)
             if "command_name" in answer:
-                # an actual TASK intent misclassified as QUICK, correct it here, FIXME: a better way is to classify it correctly in the first place
+                # an actual TASK intent misclassified as QUICK, correct it here
                 answer = ""
                 intent_result = "TASK"
+
+        elif "AMBIGUOUS" in intent_result:
+            # Ambiguous: ask human for clarification, then continue processing
+            async with ThoughtReporter(enable_llm_stream=True) as reporter:
+                await reporter.async_report({"type": "clarify"})
+                clarification = await self.llm.aask(
+                    self.llm.format_msg(memory),
+                    system_msgs=[
+                        QUICK_RESPONSE_SYSTEM_PROMPT.format(
+                            role_info=self._get_prefix()
+                        )
+                    ],
+                )
+            pattern = r"\[Message\] from .+? to .+?:\s*"
+            clarification = re.sub(pattern, "", clarification, count=1)
+            # Use ask_human; MGXEnv.ask_human publishes the question to bus.
+            human_response = await self.ask_human(clarification)
+
+            # Local-only add is still needed even though MGXEnv also published to bus.
+            # Reason: _react does NOT return early here (quick_rsp=None → falsy).
+            # The while loop continues immediately, but the bus message hasn't propagated
+            # through Mike to this role's msg_buffer yet (_observe() won't see it this tick).
+            # So _think() needs the answer in local memory right now to reason correctly.
+            # The answer will also arrive via bus in a future _observe tick (acceptable noise).
+            self.rc.memory.add(UserMessage(content=human_response))
+
+            # Return None so _react continues with the think-act loop
+            return rsp_msg, intent_result
+
         elif "SEARCH" in intent_result:
             query = "\n".join(str(msg) for msg in memory)
             answer = await SearchEnhancedQA().run(query)
@@ -444,8 +476,9 @@ class RoleZero(Role):
             if cmd["command_name"] in self.tool_execution_map:
                 tool_obj = self.tool_execution_map[cmd["command_name"]]
                 try:
+                    tool_timeout = getattr(self, "tool_timeout", 180.0)
                     if inspect.iscoroutinefunction(tool_obj):
-                        tool_output = await tool_obj(**cmd["args"])
+                        tool_output = await asyncio.wait_for(tool_obj(**cmd["args"]), timeout=tool_timeout)
                     else:
                         tool_output = tool_obj(**cmd["args"])
                     if tool_output:

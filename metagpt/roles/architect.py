@@ -6,7 +6,6 @@
 @File    : architect.py
 """
 from pydantic import Field
-
 from metagpt.actions.design_api import WriteDesign
 from metagpt.actions.write_prd import WritePRD
 from metagpt.prompts.di.architect import ARCHITECT_EXAMPLE, ARCHITECT_INSTRUCTION

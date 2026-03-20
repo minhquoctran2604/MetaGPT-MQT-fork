@@ -10,6 +10,7 @@ from metagpt.const import MESSAGE_ROUTE_TO_NONE, MESSAGE_ROUTE_TO_SELF
 from metagpt.logs import logger
 from metagpt.roles.di.role_zero import RoleZero
 from metagpt.schema import AIMessage, Document, Message, RunCodeContext, TestingContext
+from metagpt.tools.tool_registry import register_tool
 from metagpt.utils.common import (
     any_to_str,
     get_project_srcs_path,
@@ -19,7 +20,13 @@ from metagpt.utils.common import (
 from metagpt.utils.project_repo import ProjectRepo
 from metagpt.utils.report import EditorReporter
 
-
+@register_tool(
+    include_functions=[
+        "write_test",
+        "run_code",
+        "debug_error",
+    ]
+)
 class QaEngineer2(RoleZero):
     name: str = "Edward"
     profile: str = "QaEngineer"
@@ -34,23 +41,22 @@ class QaEngineer2(RoleZero):
     test_round: int = 0
     repo: Optional[ProjectRepo] = Field(default=None, exclude=True)
     input_args: Optional[BaseModel] = Field(default=None, exclude=True)
+    tools: list[str] = ["RoleZero", "QaEngineer2"]
 
-    tools: list[str] = ["WriteTest", "RunCode", "DebugError"]
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self._init_tools()
-
-    def _init_tools(self):
+    def _update_tool_execution(self):
         self.tool_execution_map.update(
             {
-                "WriteTest": self._write_test,
-                "RunCode": self._run_code,
-                "DebugError": self._debug_error,
+                "QaEngineer2.write_test": self.write_test,
+                "QaEngineer2.run_code": self.run_code,
+                "QaEngineer2.debug_error": self.debug_error,
+                # Backward-compatible aliases for any existing prompts/examples.
+                "WriteTest": self.write_test,
+                "RunCode": self.run_code,
+                "DebugError": self.debug_error,
             }
         )
 
-    async def _write_test(self, *args, **kwargs) -> str:
+    async def write_test(self, *args, **kwargs) -> str:
         """Write unit tests for the code."""
         if not self.repo:
             return "Error: Project repository not initialized. Need to receive SummarizeCode message first."
@@ -101,7 +107,7 @@ class QaEngineer2(RoleZero):
 
         return "\n".join(results) if results else "No files found to write tests for."
 
-    async def _run_code(self, code_filename: str, test_filename: str) -> str:
+    async def run_code(self, code_filename: str, test_filename: str) -> str:
         """Run the unit tests."""
         if not self.repo:
             return "Error: Project repository not initialized."
@@ -136,7 +142,7 @@ class QaEngineer2(RoleZero):
 
         return f"Test results for {test_filename}:\nSummary: {result.summary}\nStdout: {result.stdout}\nStderr: {result.stderr}"
 
-    async def _debug_error(
+    async def debug_error(
         self, code_filename: str, test_filename: str, error_msg: str
     ) -> str:
         """Debug and fix errors in tests."""
