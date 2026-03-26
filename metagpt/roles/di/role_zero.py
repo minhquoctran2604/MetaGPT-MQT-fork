@@ -22,6 +22,7 @@ from metagpt.memory.role_zero_memory import RoleZeroLongTermMemory
 from metagpt.prompts.di.role_zero import (
     CMD_PROMPT,
     DETECT_LANGUAGE_PROMPT,
+    CLARIFICATION_SYSTEM_PROMPT,
     QUICK_RESPONSE_SYSTEM_PROMPT,
     QUICK_THINK_EXAMPLES,
     QUICK_THINK_PROMPT,
@@ -427,13 +428,15 @@ class RoleZero(Role):
                 clarification = await self.llm.aask(
                     self.llm.format_msg(memory),
                     system_msgs=[
-                        QUICK_RESPONSE_SYSTEM_PROMPT.format(
+                        CLARIFICATION_SYSTEM_PROMPT.format(
                             role_info=self._get_prefix()
                         )
                     ],
                 )
             pattern = r"\[Message\] from .+? to .+?:\s*"
-            clarification = re.sub(pattern, "", clarification, count=1)
+            clarification = re.sub(pattern, "", clarification, count=1).strip()
+            if any(marker in clarification.lower() for marker in ("```", "<html", "<!doctype", "command_name")):
+                clarification = "Could you clarify the missing requirements so I can proceed?"
             # Use ask_human; MGXEnv.ask_human publishes the question to bus.
             human_response = await self.ask_human(clarification)
 
