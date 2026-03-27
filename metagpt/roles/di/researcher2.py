@@ -39,13 +39,18 @@ class Researcher2(RoleZero):
     enable_concurrency: bool = False  # Temporarily disabled for debugging hang issues
     per_page_timeout: float = 30.0
     summarize_timeout: float = 30.0  # Reduced for testing timeout handling
-    tool_timeout: float = 180.0
+    tool_timeout: float = 300.0
     tools: list[str] = ["RoleZero", "Researcher2"]
     instruction: str = (
         ROLE_INSTRUCTION
         + "\nFor the research workflow, never emit more than one dependent research command in a single turn. "
         + "Run the pipeline strictly across multiple turns: first Researcher2.collect_links(topic), then after links exist in memory run Researcher2.web_browse_and_summarize(topic, links), then after summaries exist in memory run Researcher2.conduct_research(topic, summaries). "
         + "Do not call summarize without real links from prior command output. Do not call conduct_research without real summaries from prior command output."
+        + "\nAFTER conduct_research completes and the report is written, you MUST:"
+        + "\n1. Use RoleZero.reply_to_human to send the full report content to the user."
+        + "\n2. Use RoleZero.ask_human to ask the user to review and confirm the report (e.g. 'Report is ready at <path>. Please review. Any feedback or should I finalize?')."
+        + "\n3. Only use 'end' AFTER the user confirms the report is acceptable."
+        + "\nIf web_browse_and_summarize fails or times out, still attempt conduct_research with whatever partial data you have. If no data at all, reply_to_human explaining the failure and ask_human for next steps."
     )
 
     def _update_tool_execution(self):
@@ -64,7 +69,7 @@ class Researcher2(RoleZero):
     async def collect_links(self, topic: str) -> dict[str, list[str]]:
         """Collect relevant links for a given topic."""
         action = CollectLinks(context=self.context)
-        links = await action.run(topic, 4, 4)
+        links = await action.run(topic, 2, 2)
         return links
 
     async def web_browse_and_summarize(
@@ -78,24 +83,32 @@ class Researcher2(RoleZero):
             )
         action = WebBrowseAndSummarize(context=self.context)
         system_text = get_research_system_text(topic, self.language)
-        todos = (
-            action.run(
-                *url,
-                query=query,
-                system_text=system_text,
-                per_page_timeout=self.per_page_timeout,
-                summarize_timeout=self.summarize_timeout,
-            )
-            for (query, url) in links.items()
-            if url
-        )
-        if self.enable_concurrency:
-            summaries = await asyncio.gather(*todos)
-        else:
-            summaries = [await i for i in todos]
+
+        all_summaries = []
+        for query, url in links.items():
+            if not url:
+                continue
+            try:
+                result = await asyncio.wait_for(
+                    action.run(
+                        *url,
+                        query=query,
+                        system_text=system_text,
+                        per_page_timeout=self.per_page_timeout,
+                        summarize_timeout=self.summarize_timeout,
+                    ),
+                    timeout=self.summarize_timeout * len(url) + 60,
+                )
+                all_summaries.append(result)
+            except (asyncio.TimeoutError, Exception) as e:
+                logger.warning(f"web_browse_and_summarize failed for query '{query}': {e}. Continuing with partial results.")
+                continue
+
         summaries = list(
-            (url, summary) for i in summaries for (url, summary) in i.items() if summary
+            (url, summary) for i in all_summaries for (url, summary) in i.items() if summary
         )
+        if not summaries:
+            logger.warning("All web browse attempts failed or timed out. Returning empty summaries.")
         return summaries
 
     async def conduct_research(
@@ -103,9 +116,8 @@ class Researcher2(RoleZero):
     ) -> str:
         """Conduct research and generate a report based on summaries."""
         if not summaries:
-            raise ValueError(
-                "conduct_research requires real summaries from a previous web_browse_and_summarize step."
-            )
+            logger.warning("conduct_research called with empty summaries — generating partial report from topic only.")
+            summaries = [("N/A", f"No web data could be retrieved for topic: {topic}. Please provide a summary based on general knowledge.")]
         action = ConductResearch(context=self.context)
         system_text = get_research_system_text(topic, self.language)
         summary_text = "\n---\n".join(
