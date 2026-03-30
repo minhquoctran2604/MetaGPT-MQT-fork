@@ -487,6 +487,10 @@ class RoleZero(Role):
                     if tool_output:
                         output += f": {str(tool_output)}"
                     outputs.append(output)
+                except (asyncio.TimeoutError, asyncio.CancelledError) as e:
+                    logger.warning(f"Tool {cmd['command_name']} timed out or cancelled: {e}")
+                    outputs.append(output + f": TIMEOUT - {e}")
+                    # Don't break — continue with next command
                 except Exception as e:
                     tb = traceback.format_exc()
                     logger.exception(str(e) + tb)

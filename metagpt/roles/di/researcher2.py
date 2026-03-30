@@ -78,9 +78,8 @@ class Researcher2(RoleZero):
         """Browse web pages and summarize their content."""
         logger.info(f"[DEBUG] Researcher2.web_browse_and_summarize START - topic={topic}, query_count={len(links)}, per_page_timeout={self.per_page_timeout}, summarize_timeout={self.summarize_timeout}")
         if not links or not any(links.values()):
-            raise ValueError(
-                "web_browse_and_summarize requires real links from a previous collect_links step."
-            )
+            logger.warning("No links found from collect_links. Returning empty summaries for fallback.")
+            return []
         action = WebBrowseAndSummarize(context=self.context)
         system_text = get_research_system_text(topic, self.language)
 
